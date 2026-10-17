@@ -28,7 +28,7 @@ h1,h2,h3{color:var(--navy)}.brand{text-align:center;font-weight:900;color:var(--
 <div id="login" class="center">
 <form id="loginForm" class="card login">
 <center><img class="logo" src="logo.png" alt="CUIOM logo"></center>
-<div class="brand">ALL NATIONS REVIVAL EVANGELISTIC MINISTRIES</div>
+<div class="brand">CHRIST UNIVERSAL IMPACT OUTREACH MINISTRIES</div>
 <div class="sub">STAFF PORTAL</div>
 <label>Staff Username</label>
 <input id="username" autocomplete="username">
@@ -72,6 +72,13 @@ function now(){return new Date().toLocaleTimeString()}
 function people(){return stateGet('cuiom_people',[])}
 function attendance(){return stateGet('cuiom_att',[])}
 function reports(){return stateGet('cuiom_daily_reports',[])}
+function emergencyReports(){return stateGet('cuiom_emergency_reports',[])}
+function makeId(prefix){return prefix+'-'+Date.now()+'-'+Math.random().toString(36).slice(2,9)}
+function pendingGet(){return stateGet('cuiom_pending_sync',[])}
+function pendingAdd(type,item){var q=pendingGet();if(type==='report')q=q.filter(function(x){return x.type!=='report'});q.push({type:type,item:item,queuedAt:new Date().toISOString()});localStorage.setItem('cuiom_pending_sync',JSON.stringify(q))}
+function onlineNow(){return navigator.onLine!==false}
+async function syncPending(){if(!onlineNow()||!token())return;var q=pendingGet();if(!q.length)return;var keep=[];for(var i=0;i<q.length;i++){var job=q[i];try{var endpoint=job.type==='attendance'?API+'/api/attendance/sync':API+'/api/snapshot/'+(job.type==='emergency'?'cuiom_emergency_reports':'cuiom_daily_reports');var payload=job.type==='attendance'?{value:[job.item]}:{value:job.type==='emergency'?emergencyReports():reports()};var r=await fetch(endpoint,{method:'POST',headers:headers(),body:JSON.stringify(payload)});if(!r.ok)throw new Error('sync failed');var x=await r.json();if(x.state)applyState(x.state)}catch(e){keep.push(job)}}localStorage.setItem('cuiom_pending_sync',JSON.stringify(keep));if(!keep.length)toast('Offline records synced to Admin.')}
+function updateConnectionNote(){var el=document.getElementById('connectionNote');if(el)el.textContent=onlineNow()?'Online — cloud connection available':'Offline — records will be saved on this device and synced when internet returns.'}
 
 async function login(u,p){
  try{
@@ -97,7 +104,9 @@ function staffRecord(){
 function makeTabs(){
  $('tabs').innerHTML=
   '<button data-page="clock">Staff Clock In/Out</button>'+
-  '<button data-page="daily">Daily Activities Report</button>';
+  '<button data-page="daily">Weekly Activity Report</button>'+
+  '<button data-page="emergency">Emergency Report</button>';
+ $('tabs').insertAdjacentHTML('afterend','<div id="connectionNote" class="muted" style="padding:8px 14px;background:#fff"></div>');updateConnectionNote();
  Array.prototype.forEach.call($('tabs').querySelectorAll('button'),function(b){
   b.onclick=function(){nav(this.getAttribute('data-page'))}
  });
@@ -109,6 +118,7 @@ function nav(page){
  });
  if(page==='clock')clockPage();
  if(page==='daily')dailyPage();
+ if(page==='emergency')emergencyPage();
 }
 
 function clockPage(){
@@ -148,68 +158,64 @@ function clockPage(){
 }
 
 async function saveAttendance(a,msg){
- try{
-  var r=await fetch(API+'/api/attendance/sync',{method:'POST',headers:headers(),body:JSON.stringify({value:a})});
-  var x=await r.json();if(!r.ok)throw new Error(x.error||'Cloud save failed');
-  applyState(x.state||{cuiom_att:a});toast(msg+' saved');clockPage();
- }catch(e){toast(e.message||'Cloud save failed')}
+ var event=a[a.length-1];if(!event._eventId)event._eventId=makeId('cuiom-att');
+ applyState({cuiom_att:a});
+ if(!onlineNow()){pendingAdd('attendance',event);toast(msg+' saved offline; it will sync when internet returns.');clockPage();return}
+ try{var r=await fetch(API+'/api/attendance/sync',{method:'POST',headers:headers(),body:JSON.stringify({value:[event]})});var x=await r.json();if(!r.ok)throw new Error(x.error||'Cloud save failed');applyState(x.state||{cuiom_att:a});toast(msg+' saved and synced');clockPage()}catch(e){pendingAdd('attendance',event);toast(msg+' saved on this device; sync will retry when internet returns.');clockPage()}
 }
 
 function dailyPage(){
  var p=staffRecord();
  if(!p){$('main').innerHTML='<div class="card"><p>Staff record not found.</p></div>';return}
- var date=today(),tm=now();
- $('main').innerHTML=
- '<div class="card"><h2>Daily Activities Report</h2>'+
- '<p class="muted">Complete and submit your daily report to Admin.</p>'+
- '<div class="grid">'+
- '<div><label>Name</label><input id="arName" readonly value="'+esc(p.name)+'"></div>'+
- '<div><label>Date</label><input id="arDate" type="date" readonly value="'+date+'"></div>'+
- '<div><label>Time</label><input id="arTime" readonly value="'+esc(tm)+'"></div>'+
- '<div><label>Job Role</label><input id="arRole" readonly value="'+esc(p.classDept||'')+'"></div>'+
- '<div><label>Supervisor</label><input id="arSup" readonly value="'+esc(p.supervisor||'')+'"></div>'+
- '<div><label>Mode of Supervision</label><select id="arMode"><option>Onsite</option><option>Remote</option></select></div>'+
- '<div class="full"><label>What are your major challenges that affected your performance, which needs to be taken into consideration?</label><textarea id="arChallenges"></textarea></div>'+
- '<div class="full"><label>What are your major achievements at work today?</label><textarea id="arAchievements"></textarea></div>'+
- '<div class="full"><label>General report on incident and activities done according to your job role:</label><textarea id="arActivities"></textarea></div>'+
- '<div><label>Do you have unfinished task that needs to be completed in next shift?</label><select id="arUnfinished"><option>No</option><option>Yes</option></select></div>'+
- '<div id="details"><label>If yes, give details</label><textarea id="arDetails"></textarea></div>'+
- '<div class="full"><button class="green" id="submit">Submit Daily Report</button></div>'+
- '</div></div>';
- $('details').style.display='none';
+ var start=weekKey(today()),end=weekEnd(start),tm=now();
+ $('main').innerHTML='<div class="card"><h2>Weekly Activity Report</h2><p class="muted">Submit one summary of your work for the selected week. If you are offline, it will be saved on this device and queued for syncing.</p><div class="grid">'+
+ '<div><label>Name</label><input id="arName" readonly value="'+esc(p.name)+'"></div>'+ 
+ '<div><label>Job Role</label><input id="arRole" readonly value="'+esc(p.classDept||'')+'"></div>'+ 
+ '<div><label>Week Starting (Monday)</label><input id="arDate" type="date" value="'+start+'"></div>'+ 
+ '<div><label>Week Ending (Sunday)</label><input id="arWeekEnd" readonly value="'+end+'"></div>'+ 
+ '<div><label>Supervisor</label><input id="arSup" readonly value="'+esc(p.supervisor||'')+'"></div>'+ 
+ '<div><label>Mode of Supervision</label><select id="arMode"><option>Onsite</option><option>Remote</option><option>Mixed</option></select></div>'+ 
+ '<div class="full"><label>What were your major challenges during this week?</label><textarea id="arChallenges"></textarea></div>'+ 
+ '<div class="full"><label>What were your major achievements during this week?</label><textarea id="arAchievements"></textarea></div>'+ 
+ '<div class="full"><label>Weekly summary of incidents and activities done according to your job role:</label><textarea id="arActivities"></textarea></div>'+ 
+ '<div><label>Are there unfinished tasks to carry forward next week?</label><select id="arUnfinished"><option>No</option><option>Yes</option></select></div>'+ 
+ '<div id="details" style="display:none"><label>If yes, give details</label><textarea id="arDetails"></textarea></div>'+ 
+ '<div class="full"><button class="green" id="submit">Submit Weekly Report</button></div></div></div>';
+ $('arDate').onchange=function(){var d=weekKey(this.value);this.value=d;$('arWeekEnd').value=weekEnd(d)};
  $('arUnfinished').onchange=function(){$('details').style.display=this.value==='Yes'?'block':'none'};
  $('submit').onclick=submitReport;
 }
-
 async function submitReport(){
- var p=staffRecord();
- var challenges=$('arChallenges').value.trim(),achievements=$('arAchievements').value.trim(),activities=$('arActivities').value.trim();
- var unfinished=$('arUnfinished').value,details=$('arDetails').value.trim();
- if(!challenges||!achievements||!activities)return toast('Please complete the three main report sections.');
+ var p=staffRecord();var challenges=$('arChallenges').value.trim(),achievements=$('arAchievements').value.trim(),activities=$('arActivities').value.trim();
+ var unfinished=$('arUnfinished').value,details=$('arDetails').value.trim(),start=weekKey($('arDate').value),end=weekEnd(start);
+ if(!challenges||!achievements||!activities)return toast('Please complete the three main weekly report sections.');
  if(unfinished==='Yes'&&!details)return toast('Please give details of the unfinished task.');
- var r={
-  id:'DAR-'+Date.now()+'-'+Math.random().toString(36).slice(2,7),
-  uid:p.uid,name:p.name,date:$('arDate').value,time:$('arTime').value,
-  jobRole:p.classDept||'',supervisor:p.supervisor||'',mode:$('arMode').value,
-  challenges:challenges,achievements:achievements,activities:activities,
-  unfinished:unfinished,unfinishedDetails:details,
-  week:weekKey($('arDate').value),month:$('arDate').value.slice(0,7)
- };
- var a=reports();a.push(r);
- try{
-  $('submit').disabled=true;$('submit').textContent='Submitting...';
-  var resp=await fetch(API+'/api/snapshot/cuiom_daily_reports',{method:'POST',headers:headers(),body:JSON.stringify({value:a})});
-  var x=await resp.json();if(!resp.ok)throw new Error(x.error||'Cloud save failed');
-  applyState(x.state||{cuiom_daily_reports:a});
-  toast('Daily report submitted to Admin');
-  nav('daily');
- }catch(e){$('submit').disabled=false;$('submit').textContent='Submit Daily Report';toast(e.message||'Cloud save failed')}
+ var a=reports();var existing=a.find(function(r){return String(r.uid)===String(p.uid)&&String(r.week||weekKey(r.date))===start});
+ var r={id:existing?existing.id:makeId('WAR'),uid:p.uid,name:p.name,date:start,time:now(),week:start,weekEnd:end,month:start.slice(0,7),jobRole:p.classDept||'',supervisor:p.supervisor||'',mode:$('arMode').value,challenges:challenges,achievements:achievements,activities:activities,unfinished:unfinished,unfinishedDetails:details,reportType:'weekly'};
+ if(existing){a=a.map(function(x){return x===existing?r:x})}else a.push(r);
+ applyState({cuiom_daily_reports:a});
+ $('submit').disabled=true;$('submit').textContent='Saving Weekly Report...';
+ if(!onlineNow()){pendingAdd('report',r);toast('Weekly report saved offline. It will sync when internet returns.');$('submit').disabled=false;$('submit').textContent='Submit Weekly Report';return nav('daily')}
+ try{var resp=await fetch(API+'/api/snapshot/cuiom_daily_reports',{method:'POST',headers:headers(),body:JSON.stringify({value:a})});if(!resp.ok)throw new Error('Cloud save failed');var x=await resp.json();applyState(x.state||{cuiom_daily_reports:a});toast('Weekly report submitted to Admin');nav('daily')}
+ catch(e){pendingAdd('report',r);toast('Weekly report saved on this device; it will sync when internet returns.');}
+ finally{$('submit').disabled=false;$('submit').textContent='Submit Weekly Report'}
 }
-function weekKey(d){
- var x=new Date(d+'T00:00:00'),day=x.getDay()||7;
- x.setDate(x.getDate()-day+1);
- return x.toISOString().slice(0,10);
+var emergencyRecorder=null, emergencyChunks=[], emergencyAudioData='', emergencyAttachments=[];
+function readEmergencyFiles(files){return Promise.all(Array.prototype.slice.call(files||[]).map(function(file){return new Promise(function(resolve,reject){if(file.size>8*1024*1024){reject(new Error(file.name+' is larger than 8 MB. Please choose a smaller file.'));return}var reader=new FileReader();reader.onload=function(){resolve({name:file.name,type:file.type||'application/octet-stream',size:file.size,data:String(reader.result||'')})};reader.onerror=function(){reject(new Error('Could not read '+file.name))};reader.readAsDataURL(file)})}))}
+function emergencyPage(){
+ var p=staffRecord();if(!p){$('main').innerHTML='<div class="card"><p>Staff record not found.</p></div>';return}
+ var d=new Date(),date=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'),time=d.toLocaleTimeString();emergencyAudioData='';emergencyAttachments=[];
+ $('main').innerHTML='<div class="card" style="border:2px solid #b91c1c"><h2 style="color:#b91c1c">Emergency Report</h2><p>Use this form to alert Admin about an urgent incident. If offline, the report will be saved on this device and queued to sync.</p><div class="grid"><div><label>Name of Reporter</label><input id="erName" readonly value="'+esc(p.name||currentUser.name||'')+'"></div><div><label>Staff ID</label><input id="erUid" readonly value="'+esc(p.uid||currentUser.uid||'')+'"></div><div><label>Date of Report</label><input id="erDate" readonly value="'+date+'"></div><div><label>Time of Report</label><input id="erTime" readonly value="'+time+'"></div><div class="full"><label>Emergency Message</label><textarea id="erMessage" rows="5" placeholder="Describe the emergency or incident clearly..."></textarea></div><div class="full"><label>Voice recording (optional)</label><div class="row"><button type="button" id="erRecord">Start Voice Recording</button><button type="button" id="erStop" disabled>Stop Recording</button></div><p id="erVoiceStatus" class="muted">You can type a message, record your voice, and attach evidence.</p><audio id="erAudioPreview" controls style="display:none;width:100%"></audio></div><div class="full"><label>Upload supporting files (optional)</label><input id="erFiles" type="file" multiple accept="image/*,video/*,application/pdf,.doc,.docx,.txt"><p class="muted">Choose photos, videos, PDFs or documents. Maximum 8 MB per file; keep total attachments small for reliable submission.</p></div><div class="full"><label>Take a picture (optional)</label><input id="erPhoto" type="file" accept="image/*" capture="environment"><p class="muted">On supported phones, this opens the camera.</p></div><div class="full"><label>Record a video (optional)</label><input id="erVideo" type="file" accept="video/*" capture="environment"><p class="muted">On supported phones, this opens the camera for video. Camera capture depends on the device/browser.</p></div><div class="full"><p id="erFilesStatus" class="muted">No supporting files selected.</p></div><div class="full"><button class="red" id="erSubmit">Submit Emergency Report to Admin</button></div></div></div>';
+ $('erRecord').onclick=async function(){try{if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia||!window.MediaRecorder)throw new Error('Voice recording is not supported in this browser. Please type the emergency message.');var stream=await navigator.mediaDevices.getUserMedia({audio:true});emergencyChunks=[];emergencyRecorder=new MediaRecorder(stream);emergencyRecorder.ondataavailable=function(e){if(e.data&&e.data.size)emergencyChunks.push(e.data)};emergencyRecorder.onstop=function(){var blob=new Blob(emergencyChunks,{type:emergencyRecorder.mimeType||'audio/webm'});var reader=new FileReader();reader.onloadend=function(){emergencyAudioData=String(reader.result||'');$('erAudioPreview').src=emergencyAudioData;$('erAudioPreview').style.display='block';$('erVoiceStatus').textContent='Voice recording ready to submit.'};reader.readAsDataURL(blob);stream.getTracks().forEach(function(t){t.stop()})};emergencyRecorder.start();$('erRecord').disabled=true;$('erStop').disabled=false;$('erVoiceStatus').textContent='Recording…';}catch(e){toast(e.message||'Unable to start voice recording')}};
+ $('erStop').onclick=function(){if(emergencyRecorder&&emergencyRecorder.state!=='inactive'){emergencyRecorder.stop();$('erRecord').disabled=false;$('erStop').disabled=true}};
+ function filesChanged(){var all=[];['erFiles','erPhoto','erVideo'].forEach(function(id){var el=$(id);if(el&&el.files)Array.prototype.forEach.call(el.files,function(f){if(!all.some(function(x){return x.name===f.name&&x.size===f.size}))all.push(f)})});$('erFilesStatus').textContent=all.length?all.length+' file(s) selected: '+all.map(function(f){return f.name}).join(', '):'No supporting files selected.'}
+ ['erFiles','erPhoto','erVideo'].forEach(function(id){$(id).onchange=filesChanged});
+ $('erSubmit').onclick=submitEmergencyReport;
 }
+async function submitEmergencyReport(){var p=staffRecord(),message=$('erMessage').value.trim();var chosen=[];['erFiles','erPhoto','erVideo'].forEach(function(id){var el=$(id);if(el&&el.files)Array.prototype.forEach.call(el.files,function(f){if(!chosen.some(function(x){return x.name===f.name&&x.size===f.size}))chosen.push(f)})});if(!message&&!emergencyAudioData&&!chosen.length)return toast('Please type a message, record your voice, or attach a file/photo/video.');$('erSubmit').disabled=true;$('erSubmit').textContent='Preparing report…';try{var attachments=await readEmergencyFiles(chosen);var total=attachments.reduce(function(n,f){return n+f.size},0);if(total>10*1024*1024)throw new Error('Attachments total more than 10 MB. Please remove some files.');var a=emergencyReports();var r={id:makeId('EMR'),uid:p.uid,name:p.name||currentUser.name||'',date:$('erDate').value,time:$('erTime').value,message:message,audioData:emergencyAudioData,attachments:attachments,createdAt:new Date().toISOString(),status:'New',reportType:'emergency'};a.push(r);applyState({cuiom_emergency_reports:a});$('erSubmit').textContent='Submitting…';if(!onlineNow()){pendingAdd('emergency',r);toast('Emergency report saved offline and queued to sync.');return}var resp=await fetch(API+'/api/snapshot/cuiom_emergency_reports',{method:'POST',headers:headers(),body:JSON.stringify({value:a})});if(!resp.ok)throw new Error('Cloud save failed');var x=await resp.json();applyState(x.state||{cuiom_emergency_reports:a});toast('Emergency report submitted to Admin.');emergencyAudioData='';emergencyPage()}catch(e){if(typeof r!=='undefined'&&r&&(!onlineNow()||String(e.message||'').indexOf('Cloud save failed')>=0||String(e.message||'').indexOf('fetch')>=0))pendingAdd('emergency',r);toast((e.message||'Report could not be submitted')+'. Please try a smaller file or submit when connected.')}finally{var b=$('erSubmit');if(b){b.disabled=false;b.textContent='Submit Emergency Report to Admin'}}}
+
+function weekKey(d){var x=new Date(d+'T00:00:00');if(isNaN(x.getTime()))x=new Date();var day=x.getDay()||7;x.setDate(x.getDate()-day+1);return x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')+'-'+String(x.getDate()).padStart(2,'0')}
+function weekEnd(d){var x=new Date(d+'T00:00:00');x.setDate(x.getDate()+6);return x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')+'-'+String(x.getDate()).padStart(2,'0')}
 
 function showApp(){
  $('login').classList.add('hide');$('app').classList.remove('hide');
@@ -221,15 +227,8 @@ function logout(){
  try{localStorage.removeItem('cuiom_cloud_token');localStorage.removeItem('cuiom_staff_portal_user')}catch(e){}
  $('app').classList.add('hide');$('login').classList.remove('hide');
 }
-async function restore(){
- var saved=stateGet('cuiom_staff_portal_user',null),t=token();
- if(!saved||!t)return;
- try{
-  var r=await fetch(API+'/api/state',{headers:headers()});
-  if(!r.ok)throw new Error();
-  var x=await r.json();applyState(x);currentUser=saved;showApp();
- }catch(e){logout()}
-}
+async function restore(){var saved=stateGet('cuiom_staff_portal_user',null),t=token();if(!saved||!t)return;currentUser=saved;try{var r=await fetch(API+'/api/state',{headers:headers()});if(!r.ok)throw new Error();applyState(await r.json());showApp();syncPending()}catch(e){if(staffRecord()){showApp();toast('Offline mode: cached records are available.');}else{currentUser=null;}}}
+window.addEventListener('online',function(){updateConnectionNote();syncPending()});window.addEventListener('offline',updateConnectionNote);
 $('loginForm').onsubmit=function(e){e.preventDefault();login($('username').value.trim().toLowerCase(),$('password').value)}
 $('logout').onclick=logout;
 restore();
