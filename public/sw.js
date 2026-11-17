@@ -1,5 +1,5 @@
-const CACHE='cuiom-attendance-v3';
-const SHELL=['/','/index.html','/staff-login.html','/manifest.json','/logo.png'];
-self.addEventListener('install',e=>{self.skipWaiting();e.waitUntil(caches.open(CACHE).then(c=>c.addAll(SHELL).catch(()=>{})))});
-self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('cuiom-attendance-')&&k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()))});
-self.addEventListener('fetch',e=>{if(e.request.method!=='GET')return;const u=new URL(e.request.url);if(u.origin!==self.location.origin)return;e.respondWith(fetch(e.request).then(r=>{if(r&&r.ok){const copy=r.clone();caches.open(CACHE).then(c=>c.put(e.request,copy)).catch(()=>{})}return r}).catch(()=>caches.match(e.request).then(r=>r||caches.match('/staff-login.html'))))});
+const CACHE='cuiom-offline-v3';
+const FILES=['/','/index.html','/staff-login.html','/manifest.json','/logo.png'];
+self.addEventListener('install',event=>event.waitUntil((async()=>{const c=await caches.open(CACHE);for(const u of FILES){try{await c.add(u)}catch(e){}}await self.skipWaiting()})()));
+self.addEventListener('activate',event=>event.waitUntil((async()=>{const ks=await caches.keys();await Promise.all(ks.filter(k=>k.startsWith('cuiom-')&&k!==CACHE).map(k=>caches.delete(k)));await self.clients.claim()})()));
+self.addEventListener('fetch',event=>{const req=event.request,url=new URL(req.url);if(url.origin!==self.location.origin||url.pathname.startsWith('/api/')||req.method!=='GET')return;if(req.mode==='navigate'){event.respondWith((async()=>{const c=await caches.open(CACHE);try{const r=await fetch(req);if(r.ok)c.put(req,r.clone());return r}catch(e){return (await c.match(req))||(await c.match(url.pathname))||(await c.match('/staff-login.html'))||(await c.match('/index.html'))||Response.error()}})());return}event.respondWith((async()=>{const c=await caches.open(CACHE),cached=await c.match(req);if(cached)return cached;try{const r=await fetch(req);if(r.ok)c.put(req,r.clone());return r}catch(e){return cached||Response.error()}})())});
